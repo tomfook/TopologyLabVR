@@ -1,0 +1,2 @@
+C:\Users\marif\Desktop\tomoya\vr\topologyLabVR\TopologyLabVR\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\src\main\cpp\CMakeLists.txt
+C:\Users\marif\Desktop\tomoya\vr\topologyLabVR\TopologyLabVR\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\src\main\cpp\GameActivity\CMakeLists.txt
