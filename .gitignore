@@ -1,12 +1,33 @@
+# Unity が自動生成するもの（プロジェクトを開けば再生成される）
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/.utmp/
+
+# ビルド成果物
 /[Bb]uild/
 /[Bb]uilds/
-/[Ll]ogs/
-/[Uu]ser[Ss]ttings/
+*.apk
+*.aab
 
+# エディタが落ちたときの復旧シーン
+/[Aa]ssets/_Recovery/
+/[Aa]ssets/_Recovery.meta
+
+# IDE が生成するもの
+.vs/
+.vscode/
+.idea/
 *.csproj
 *.sln
+*.slnx
 *.user
-*.apk
+*.pidb
+*.suo
+*.userprefs
+
+# OS
+.DS_Store
+Thumbs.db
