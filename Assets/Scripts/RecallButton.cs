@@ -34,7 +34,7 @@ public class RecallButton : MonoBehaviour
     void Start()
     {
         // シーンにある XR Grab Interactable を全部拾って、今の姿勢を「家」として記録
-        foreach (var gi in FindObjectsByType<XRGrabInteractable>(FindObjectsSortMode.None))
+        foreach (var gi in FindObjectsByType<XRGrabInteractable>())
         {
             var t = gi.transform;
             homes.Add(new Home { interactable = gi, position = t.position, rotation = t.rotation, scale = t.localScale });
