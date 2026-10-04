@@ -24,7 +24,7 @@ using UnityEngine;
 [ExecuteAlways]                 // 再生していないエディタ上でも動かす
 [DefaultExecutionOrder(-100)]   // 同じ GameObject の XR Grab Interactable より先に初期化してコライダーを用意する
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
-public class MobiusStrip : MonoBehaviour
+public class MobiusStrip : ParametricSurface
 {
     [SerializeField, Min(0.01f)]    float majorRadius = 0.12f;  // R: 輪の中心線の半径 (m)
     [SerializeField, Min(0.001f)]   float halfWidth = 0.05f;    // w: 帯の半幅 (m)。R より小さくすること（R 以上だと帯が回転軸に触れて潰れる）
@@ -55,39 +55,47 @@ public class MobiusStrip : MonoBehaviour
         return new Vector3(a * Mathf.Cos(u), v * Mathf.Sin(h), a * Mathf.Sin(u));
     }
 
-    // 外向けの窓口: (u, v) → ワールド座標。u は 2π を超えてもよい（式は u 方向に連続でつながる）
-    public Vector3 SurfacePoint(float u, float v) => transform.TransformPoint(Position(u, v));
+    // ── ParametricSurface の窓口 ──
+    // (u, v) → ワールド座標の SurfacePoint は親クラスにある（u は 2π を超えてもよい。式は u 方向に連続でつながる）
+    public override Vector2 UVMin => new Vector2(0f, -HalfWidth);
+    public override Vector2 UVMax => new Vector2(2f * Mathf.PI, HalfWidth);
 
-    // 同じく (u, v) → このオブジェクトのローカル座標 / ローカル法線（線を描く側が子オブジェクトの Mesh を作るのに使う）
-    public Vector3 LocalPoint(float u, float v) => Position(u, v);
-    public Vector3 LocalNormal(float u, float v) => Normal(u, v);
+    // (u, v) → このオブジェクトのローカル座標 / ローカル法線（線を描く側が子オブジェクトの Mesh を作るのに使う）
+    public override Vector3 LocalPoint(float u, float v) => Position(u, v);
+    public override Vector3 LocalNormal(float u, float v) => Normal(u, v);
 
     // 継ぎ目の規則を使った「持ち上げ」。この面は u を 2π 進めると (u, v) → (u, −v) に貼り合わさる:
     //   P(u + 2π, v) = P(u, −v)       （だから u を 4π 進めると元の点に戻る）
     // レイから読んだ (u, v) は 0 ≤ u ≤ 2π の範囲に畳まれているので、そのまま点列にすると継ぎ目で u が 2π → 0、v が反転して飛ぶ。
     // 前の点 previous（u は 2π を超えていてよい）に一番近い「同じ点の別名」(u + 2πk, (−1)^k · v) を返して、u を連続に伸ばす。
-    public Vector2 LiftNear(Vector2 previous, Vector2 uv)
+    public override Vector2 LiftNear(Vector2 previous, Vector2 uv)
     {
         int k = Mathf.RoundToInt((previous.x - uv.x) / (2f * Mathf.PI));
         float sign = (k & 1) == 0 ? 1f : -1f;   // k が奇数なら v の向きが反転（負の奇数でも (k & 1) == 1）
         return new Vector2(uv.x + 2f * Mathf.PI * k, sign * uv.y);
     }
 
-    // 法線 = Cross(∂p/∂v, ∂p/∂u) を正規化したもの。∂p/∂u, ∂p/∂v は式を手で微分したもの。
-    // 三角形を (a, c, b) の順に並べたとき、Unity が「表」とみなす側がこの向き（Torus.cs / KleinBottle.cs と同じ理屈）
-    Vector3 Normal(float u, float v)
+    // ∂p/∂u, ∂p/∂v は式を手で微分したもの。A = R + v·cos(u/2) とおくと ∂A/∂u = −0.5·v·sin(u/2)、∂A/∂v = cos(u/2)
+    public override Vector3 dPdu(float u, float v)
     {
         float h = u * 0.5f, s = Mathf.Sin(h), c = Mathf.Cos(h);
         float cu = Mathf.Cos(u), su = Mathf.Sin(u);
-
         float a  = majorRadius + v * c;
         float au = -0.5f * v * s;   // ∂A/∂u
-        float av = c;               // ∂A/∂v
-
-        var pu = new Vector3(au * cu - a * su, 0.5f * v * c, au * su + a * cu);
-        var pv = new Vector3(av * cu,          s,            av * su);
-        return Vector3.Cross(pv, pu).normalized;
+        return new Vector3(au * cu - a * su, 0.5f * v * c, au * su + a * cu);
     }
+
+    public override Vector3 dPdv(float u, float v)
+    {
+        float h = u * 0.5f, s = Mathf.Sin(h), c = Mathf.Cos(h);
+        float cu = Mathf.Cos(u), su = Mathf.Sin(u);
+        float av = c;               // ∂A/∂v
+        return new Vector3(av * cu, s, av * su);
+    }
+
+    // 法線 = Cross(∂p/∂v, ∂p/∂u) を正規化したもの。
+    // 三角形を (a, c, b) の順に並べたとき、Unity が「表」とみなす側がこの向き（Torus.cs / KleinBottle.cs と同じ理屈）
+    Vector3 Normal(float u, float v) => Vector3.Cross(dPdv(u, v), dPdu(u, v)).normalized;
 
     void Build()
     {

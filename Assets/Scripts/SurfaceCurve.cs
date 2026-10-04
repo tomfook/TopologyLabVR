@@ -1,14 +1,14 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// 曲面（メビウスの帯）の上に描いた線を持って、細いチューブの Mesh にして見せるコンポーネント。
+// 曲面（ParametricSurface: トーラス、メビウスの帯など）の上に描いた線を持って、細いチューブの Mesh にして見せるコンポーネント。
 //
 // ── 線は「3D の点」ではなく「曲面のパラメータ (u, v) の点列」として持つ ──
-//   ・この GameObject は MobiusStrip の「子」に置く。だから掴んで動かしても、拡大縮小しても、線は帯についてくる。
-//   ・(u, v) から 3D の点を出すのは、帯の式（MobiusStrip.LocalPoint / LocalNormal）。点列が曲面の上にあることは構造上保証される。
-//   ・継ぎ目をまたぐと (u, v) が (0, −v) に飛ぶので、点を足すたびに MobiusStrip.LiftNear で「前の点に一番近い別名」へ持ち上げて、
-//     u を 2π を超えて連続に伸ばす。メビウスの帯を一周すると v の符号が反転する、という性質が、そのまま点列に現れる。
-//     （u が 4π 進むと元の位置に戻る。v ≠ 0 の線は 2 周しないと閉じない。v = 0 の中心線は 1 周で閉じる。）
+//   ・この GameObject は曲面の「子」に置く。だから掴んで動かしても、拡大縮小しても、線は曲面についてくる。
+//   ・(u, v) から 3D の点を出すのは、曲面の式（ParametricSurface.LocalPoint / LocalNormal）。点列が曲面の上にあることは構造上保証される。
+//   ・継ぎ目をまたぐと (u, v) が別名に飛ぶので、点を足すたびに ParametricSurface.LiftNear で「前の点に一番近い別名」へ持ち上げて、
+//     定義域の外まで連続に伸ばす。継ぎ目の規則は曲面ごとに違い、ここは知らなくてよい。
+//     例: メビウスの帯は一周すると v の符号が反転する（u が 4π 進むと元に戻る）。トーラスは u, v とも 2π で元に戻る。
 //
 // ── チューブの作り方 ──
 //   各点で、接線 T（隣の点との差）と面の法線 N から、断面の円の向き (N2, B) を決める。
@@ -19,7 +19,7 @@ using UnityEngine;
 //   両端は小さな円盤（扇形）でふさぐ。
 //
 // ── 置き方 ──
-//   MobiusStrip の子の空の GameObject に付ける（MeshFilter / MeshRenderer は RequireComponent で自動で付く）。
+//   曲面（Torus / MobiusStrip）の子の空の GameObject に付ける（MeshFilter / MeshRenderer は RequireComponent で自動で付く）。
 //   実機で見せる GameObject はシーンに置く（実行時に作った球が左右に割れたため）。Mesh の中身だけ実行時に作る。
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class SurfaceCurve : MonoBehaviour
@@ -30,7 +30,7 @@ public class SurfaceCurve : MonoBehaviour
     [SerializeField] Material material;                       // 空なら、帯のマテリアルを複製して下の色を付ける
     [SerializeField] Color color = new Color(1f, 0.35f, 0.1f);
 
-    MobiusStrip strip;
+    ParametricSurface strip;   // 親の曲面（Torus / MobiusStrip など）。式・法線・継ぎ目の規則はこの窓口越しに使う
     Mesh mesh;
     readonly List<List<Vector2>> strokes = new List<List<Vector2>>();   // 1 画 = (u, v) の点列
     List<Vector2> current;                                              // 今描いている画（描いていなければ null）
@@ -42,9 +42,9 @@ public class SurfaceCurve : MonoBehaviour
 
     void Awake()
     {
-        strip = GetComponentInParent<MobiusStrip>();
+        strip = GetComponentInParent<ParametricSurface>();
 
-        // 帯の子として、帯のローカル座標とぴったり重ねる（式のローカル座標をそのまま使うため）
+        // 曲面の子として、曲面のローカル座標とぴったり重ねる（式のローカル座標をそのまま使うため）
         transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
         transform.localScale = Vector3.one;
 

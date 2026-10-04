@@ -1,9 +1,9 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-// 曲面（メビウスの帯）の上に線を描く「ペン」。
+// 曲面（ParametricSurface: トーラス、メビウスの帯など）の上に線を描く「ペン」。
 //
-// 右トリガーを押している間、右手のレイが MobiusStrip に当たった点について
+// 右トリガーを押している間、右手のレイが ParametricSurface に当たった点について
 //   ① hit.textureCoord から (u, v) を読む（Mesh の UV に (u, v) を入れてあるので、補間済みの値がそのまま来る）
 //   ② その (u, v) を帯の子の SurfaceCurve に渡す（SurfaceCurve が (u, v) の点列として持ち、チューブにする）
 //   ③ その (u, v) を式に戻した点へ Marker の球を置く（ペン先の目印）
@@ -78,9 +78,9 @@ public class SurfaceProbe : MonoBehaviour
 
         var ray = new Ray(rayOrigin.position, rayOrigin.forward);
         if (!Physics.Raycast(ray, out RaycastHit hit, maxDistance, ~0, QueryTriggerInteraction.Ignore)
-            || !hit.collider.TryGetComponent(out MobiusStrip strip))
+            || !hit.collider.TryGetComponent(out ParametricSurface strip))
         {
-            Release();   // 帯から外れたら、1 画を終える
+            Release();   // 曲面から外れたら、1 画を終える
             return;
         }
 
