@@ -98,6 +98,24 @@ public class SurfaceCurve : MonoBehaviour
         Rebuild();
     }
 
+    // ペン（SurfaceProbe）で描き込める線か。迷路の線（SurfaceMaze が使う SurfaceCurve）は false にして、
+    // ペンの書き込み先にも「全部消す」にも巻き込まれないようにする。
+    // Inspector には出さず、持ち主のコードが実行時に決める（チェックを入れ忘れる事故を避ける）
+    public bool UserDrawable { get; set; } = true;
+
+    // 点列を丸ごと差し替える。迷路のように「(u, v) の点列が最初から決まっている線」を渡すのに使う。
+    // 点は継ぎ目をまたいで連続（u, v が 2π を超えてよい）になっているものを渡す = LiftNear は通さない。
+    // 点が 2 つ未満の線は捨てる。何度呼んでもよい（呼ぶたびに Mesh を 1 回だけ作り直す）
+    public void SetStrokes(IList<List<Vector2>> newStrokes)
+    {
+        if (strip == null) return;   // Awake 前 / 親の曲面なし
+        strokes.Clear();
+        current = null;
+        foreach (var s in newStrokes)
+            if (s.Count >= 2) strokes.Add(new List<Vector2>(s));
+        Rebuild();
+    }
+
     void Rebuild()
     {
         vertices.Clear();

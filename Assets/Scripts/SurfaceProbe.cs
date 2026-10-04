@@ -65,7 +65,7 @@ public class SurfaceProbe : MonoBehaviour
     {
         if (clearAction.WasPressedThisFrame())
             foreach (var curve in FindObjectsByType<SurfaceCurve>())
-                curve.Clear();
+                if (curve.UserDrawable) curve.Clear();   // 迷路の線は消さない
 
         if (rayOrigin == null)
         {
@@ -97,7 +97,12 @@ public class SurfaceProbe : MonoBehaviour
         marker.gameObject.SetActive(true);
 
         // 帯の子の SurfaceCurve に (u, v) を渡す。別の帯に移ったら、前の線の 1 画は終える
-        var target = strip.GetComponentInChildren<SurfaceCurve>();
+        // 子には迷路の線（UserDrawable = false）も付いているので、ペンで描けるものを探す
+        SurfaceCurve target = null;
+        foreach (var c in strip.GetComponentsInChildren<SurfaceCurve>())
+        {
+            if (c.UserDrawable) { target = c; break; }
+        }
         if (target != activeCurve)
         {
             EndStroke();
