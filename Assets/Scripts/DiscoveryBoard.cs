@@ -1,13 +1,17 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit.Interactables;
+using UnityEngine.XR.Interaction.Toolkit.Interactors;
 
 // 発見ボード: 角の工房で試した「何角形を何枚」の結果を、表のマスに付けていく。文字は使わない。
 //   縦 = タイルの形（左端の列に、その形の絵）。上から三角・四角・五角・六角
 //   横 = 枚数（上端の行に、枚数ぶんの点を輪に並べた絵 = ピンのまわりに何枚）。左から 2 枚 … 7 枚
 //   結果: ○（緑の輪）= 角ができた / ✕（青）= ぴったり平ら / ✕（赤）= 重なる・ぺたんこ
 //   まだ試していないマスは脈打つ（= ここも試せる）。マスは、その形で重なる枚数（CornerFold.MaxCount）までしか作らない
-//   ○ が全部そろうと（ちょうど 5 つ）、ボード全体が緑に光ってチャイム。Completed を呼ぶ。そのあとはふちに緑の枠が残る
+//   ○ が全部そろうと（ちょうど 5 つ）、ボード全体が緑に光ってチャイム。Completed を呼ぶ。そのあとはふちに緑の枠が残り、○ がゆっくり息をする
+//   ○ のマスを選ぶ（4 章）: レイ（手）を当てるとそのマスが明るくなり、グリップすると CornerPicked(p, q) を呼ぶ（SolidGrower が聞いて立体を育てる）
+//     Board に XR Simple Interactable と Box Collider を付けておく（Box Collider の大きさはコードが板に合わせる）
 //
 // 工房（CornerWorkshop）の Tried イベントを聞くだけ。工房はボードのことを知らない（知らせる側と聞く側を分ける）。
 // 見た目は「シーンに置いた GameObject + 実行時に Mesh だけ作る」（実機で左右の目にずれないための方針）。
@@ -18,7 +22,7 @@ public class DiscoveryBoard : MonoBehaviour
     [Header("つなぐもの")]
     [Tooltip("結果を聞く工房。空なら、シーンにある工房を全部聞く")]
     [SerializeField] CornerWorkshop[] workshops;
-    [Tooltip("ボード本体（このオブジェクトの子）。MeshFilter / MeshRenderer（Material 6 つ）/ Glow（Pulse OFF）")]
+    [Tooltip("ボード本体（このオブジェクトの子）。MeshFilter / MeshRenderer（Material 6 つ）/ Glow（Pulse OFF）/ Box Collider / XR Simple Interactable")]
     [SerializeField] MeshFilter board;
     [Tooltip("まだ試していないマス（このオブジェクトの子）。MeshFilter / MeshRenderer（Material 1 つ）/ Glow（Pulse ON）")]
     [SerializeField] MeshFilter untried;
@@ -35,6 +39,8 @@ public class DiscoveryBoard : MonoBehaviour
 
     // ○ が全部そろったとき（2 章のゴール）。後で章をつなぐ台本がこれを聞く
     public event Action Completed;
+    // ○ のマスが選ばれたとき (p, q)。SolidGrower がこれを聞いて立体を育てる
+    public event Action<int, int> CornerPicked;
 
     public const int MinSides = 3, MaxSides = 6, MinCount = 2, MaxCount = 7;
     const int Rows = MaxSides - MinSides + 1;   // 4
@@ -56,6 +62,11 @@ public class DiscoveryBoard : MonoBehaviour
 
     Mesh boardMesh, untriedMesh;
     Glow boardGlow;
+    XRSimpleInteractable picker;   // Board の XR Simple Interactable（○ を選ぶ）
+    BoxCollider pickArea;
+    int hoverR = -1, hoverC = -1;  // レイが当たっている ○ のマス（無ければ −1）
+    bool pickerWasSelected;
+    const float BreathePeriod = 1.6f;
     AudioSource source;
     AudioClip chime;
     readonly List<CornerWorkshop> listening = new List<CornerWorkshop>();
@@ -81,7 +92,11 @@ public class DiscoveryBoard : MonoBehaviour
         if (board != null)
         {
             boardGlow = board.GetComponent<Glow>();
-            if (boardGlow != null) boardGlow.Pulse = false;
+            if (boardGlow != null) { boardGlow.Pulse = false; boardGlow.HoverGlow = false; }   // レイが当たっても全体は光らせない（マスだけ）
+            picker = board.GetComponent<XRSimpleInteractable>();
+            pickArea = board.GetComponent<BoxCollider>();
+            if (picker == null || pickArea == null)
+                Debug.LogWarning("DiscoveryBoard: ○ を選べるようにするには、Board に Box Collider と XR Simple Interactable を付けてください");
             var mr = board.GetComponent<MeshRenderer>();
             if (mr != null && mr.sharedMaterials.Length < Submeshes)
                 Debug.LogWarning("DiscoveryBoard: Board の MeshRenderer に Material を 6 つ入れてください（0 = 板 / 1 = 試したマス / 2 = 形と枚数の絵 / 3 = ○ / 4 = 平ら（青）/ 5 = ✕）");
@@ -166,6 +181,8 @@ public class DiscoveryBoard : MonoBehaviour
                     if (popTime[r, c] >= PopSeconds) popTime[r, c] = -1f;
                     animating = true;
                 }
+        UpdatePicking();
+        if (completeShown) animating = true;   // そろったあとは ○ がゆっくり息をする（= 触れる）
         if (dirty || animating) Rebuild();
         dirty = animating;   // 縮み終わった次のフレームでもう 1 回作り、ちょうど 1 倍で止める
 
@@ -182,6 +199,53 @@ public class DiscoveryBoard : MonoBehaviour
                 Completed?.Invoke();
             }
         }
+    }
+
+    // ---- ○ を選ぶ ------------------------------------------------------------------------
+
+    void UpdatePicking()
+    {
+        if (!Application.isPlaying || picker == null || pickArea == null) return;
+
+        int r = -1, c = -1;
+        if (picker.isHovered)
+            foreach (var it in picker.interactorsHovering)
+                if (CellUnder(it.transform, out r, out c)) break;
+        if (r != hoverR || c != hoverC) { hoverR = r; hoverC = c; dirty = true; }
+
+        bool selected = picker.isSelected;
+        if (selected && !pickerWasSelected)
+        {
+            int sr, sc;
+            if (CellUnder(picker.firstInteractorSelecting.transform, out sr, out sc))
+            {
+                popTime[sr, sc] = 0f;   // 選んだ ○ がポンと跳ねる
+                dirty = true;
+                CornerPicked?.Invoke(MinSides + sr, MinCount + sc);
+            }
+        }
+        pickerWasSelected = selected;
+    }
+
+    // 手（レイの出どころ）が指している ○ のマス。レイが板に当たればその点、当たらなければ（手が近いとき）手の位置を板に落とした点で見る
+    bool CellUnder(Transform hand, out int r, out int c)
+    {
+        r = c = -1;
+        if (hand == null || board == null) return false;
+        RaycastHit hit;
+        Vector3 world = pickArea.Raycast(new Ray(hand.position, hand.forward), out hit, 20f) ? hit.point : hand.position;
+        Vector3 p = board.transform.InverseTransformPoint(world);
+
+        float s = cellSize, half = s * (1f - cellGap) * 0.5f;
+        int col = Mathf.RoundToInt(p.x / s + Cols * 0.5f);
+        int row = Mathf.RoundToInt(Rows * 0.5f - p.y / s);
+        int rr = row - 1, cc = col - 1;
+        if (rr < 0 || rr >= Rows || cc < 0 || cc >= Cols || !HasCell(rr, cc)) return false;
+        Vector3 o = CellCenter(row, col);
+        if (Mathf.Abs(p.x - o.x) > half || Mathf.Abs(p.y - o.y) > half) return false;
+        if (results[rr, cc] != (int)CornerFold.Result.Corner) return false;   // 選べるのは ○ だけ
+        r = rr; c = cc;
+        return true;
     }
 
     // ---- 配置 ----------------------------------------------------------------------------
@@ -215,6 +279,12 @@ public class DiscoveryBoard : MonoBehaviour
         var center = (CellCenter(0, 0) + CellCenter(Rows, Cols)) * 0.5f;
         AddRect(center, bw, bh, 0f, SubBack);
         AddRect(center, bw, bh, 0f, SubBack, back: true);
+        if (pickArea != null)   // ○ を選ぶ当たり判定を板に合わせる（Mesh は毎フレーム変わりうるので、MeshCollider でなく箱にする）
+        {
+            var size = new Vector3(bw * 2f, bh * 2f, 0.01f);
+            if (pickArea.center != center) pickArea.center = center;
+            if (pickArea.size != size) pickArea.size = size;
+        }
 
         // そろったあと: 板のふちに緑の枠（○ と同じ Material）。印の色は変えない
         if (completeShown)
@@ -254,10 +324,15 @@ public class DiscoveryBoard : MonoBehaviour
                 float pop = 1f;
                 if (popTime[r, c] >= 0f) { float k = 1f - popTime[r, c] / PopSeconds; pop = 1f + 0.6f * k * k; }
 
-                AddRect(o + new Vector3(0, 0, CellZ), half, half, 0f, SubCell);
+                bool hovered = r == hoverR && c == hoverC;
+                AddRect(o + new Vector3(0, 0, CellZ), half, half, 0f, hovered ? SubIcon : SubCell);   // レイが当たった ○ はマスが明るい
                 var m = o + new Vector3(0, 0, MarkZ);
                 if (result == CornerFold.Result.Corner)
+                {
+                    if (hovered) pop *= 1.15f;
+                    else if (completeShown) pop *= 1f + 0.07f * (0.5f - 0.5f * Mathf.Cos(2f * Mathf.PI * Time.time / BreathePeriod));
                     AddRing(m, 0.36f * s * pop, 0.25f * s * pop, 40, SubCorner);
+                }
                 else
                 {
                     // ✕ = 斜めの棒 2 本。ぴったり平らは青の ✕（角にはならない。でも 3 章で「どこまでも敷き詰まる床」になる組なので区別する）
