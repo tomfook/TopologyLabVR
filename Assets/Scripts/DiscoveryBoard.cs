@@ -9,9 +9,11 @@ using UnityEngine.XR.Interaction.Toolkit.Interactors;
 //   横 = 枚数（上端の行に、枚数ぶんの点を輪に並べた絵 = ピンのまわりに何枚）。左から 2 枚 … 7 枚
 //   結果: ○（緑の輪）= 角ができた / ✕（青）= ぴったり平ら / ✕（赤）= 重なる・ぺたんこ
 //   まだ試していないマスは脈打つ（= ここも試せる）。マスは、その形で重なる枚数（CornerFold.MaxCount）までしか作らない
-//   ○ が全部そろうと（ちょうど 5 つ）、ボード全体が緑に光ってチャイム。Completed を呼ぶ。そのあとはふちに緑の枠が残り、○ がゆっくり息をする
+//   ○ が全部そろうと（ちょうど 5 つ）、チャイムだけ鳴って ○ がゆっくり息をし始める（= 次はこれを触る）。CornersFound を呼ぶ
+//   ○ の立体を 5 つ全部育てると、ボード全体が緑に光ってチャイム。そのあとふちに緑の枠が残る。AllGrown を呼ぶ
 //   ○ のマスを選ぶ（4 章）: レイ（手）を当てるとそのマスが明るくなり、グリップすると CornerPicked(p, q) を呼ぶ（SolidGrower が聞いて立体を育てる）
 //     Board に XR Simple Interactable と Box Collider を付けておく（Box Collider の大きさはコードが板に合わせる）
+//   育てたマス: SolidGrower の Grown を聞いて、そのマスの ○ を、くるくる回る小さな立体（緑）に置き換える。もう一度選べば育て直せる
 //
 // 工房（CornerWorkshop）の Tried イベントを聞くだけ。工房はボードのことを知らない（知らせる側と聞く側を分ける）。
 // 見た目は「シーンに置いた GameObject + 実行時に Mesh だけ作る」（実機で左右の目にずれないための方針）。
@@ -37,8 +39,9 @@ public class DiscoveryBoard : MonoBehaviour
     [SerializeField] Color completeColor = new Color(0.2f, 0.9f, 0.3f);
     [SerializeField, Range(0f, 1f)] float volume = 0.6f;
 
-    // ○ が全部そろったとき（2 章のゴール）。後で章をつなぐ台本がこれを聞く
-    public event Action Completed;
+    // ○ が全部そろったとき（2 章のゴール）/ ○ の立体を全部育てたとき（4 章のゴール）。後で章をつなぐ台本がこれを聞く
+    public event Action CornersFound;
+    public event Action AllGrown;
     // ○ のマスが選ばれたとき (p, q)。SolidGrower がこれを聞いて立体を育てる
     public event Action<int, int> CornerPicked;
 
@@ -51,14 +54,23 @@ public class DiscoveryBoard : MonoBehaviour
 
     const float PopSeconds = 0.35f;     // 印が付いたときに、大きく出てから縮む時間
     const float CompleteDelay = 0.7f;   // 最後の ○ のあと、工房のチャイムと重ならないよう少し待つ
+    const float GrownDelay = 1.2f;      // 最後の立体が閉じたあと、育てる側のチャイムと重ならないよう少し待つ
     const float CellZ = -0.002f, MarkZ = -0.004f;   // 板より手前（ボードの表は −Z 向き = 見る人の側）
 
     int[,] results = new int[Rows, Cols];   // −1 = まだ / それ以外 = (int)CornerFold.Result
+    bool[,] grown = new bool[Rows, Cols];   // 立体を育てたマス（○ の代わりにミニチュアを出す）
+    readonly Dictionary<int, PolyhedronGrowth> minis = new Dictionary<int, PolyhedronGrowth>();   // ミニチュアの形（p * 10 + q）
+    readonly List<SolidGrower> growers = new List<SolidGrower>();
+    const float MiniSpin = 0.6f;                  // ミニチュアの回る速さ [rad/秒]
+    const float MiniTilt = 20f * Mathf.Deg2Rad;   // 少し手前に傾けて、上の面も見えるように
     float[,] popTime = new float[Rows, Cols];
-    int cornerTotal, cornerFound;
-    bool complete;          // ○ がそろった
-    bool completeShown;     // そろったことを見せた（光ってチャイムのあと）。ボードのふちに緑の枠を出す
-    float completeTimer = -1f;
+    int cornerTotal, cornerFound, grownFound;
+    bool cornersDone;       // ○ がそろった（2 章のゴール）
+    bool cornersShown;      // そろったことを知らせた（チャイムのあと）。ここから ○ がゆっくり息をする = 次はこれを触る
+    float cornersTimer = -1f;
+    bool allGrown;          // ○ の立体を全部育てた（4 章のゴール）
+    bool completeShown;     // 全部育てたことを見せた（光ってチャイムのあと）。ボードのふちに緑の枠を出す
+    float grownTimer = -1f;
 
     Mesh boardMesh, untriedMesh;
     Glow boardGlow;
@@ -108,12 +120,34 @@ public class DiscoveryBoard : MonoBehaviour
         if (workshops != null) foreach (var w in workshops) if (w != null) listening.Add(w);
         if (listening.Count == 0) listening.AddRange(FindObjectsByType<CornerWorkshop>());
         foreach (var w in listening) w.Tried += OnTried;
+
+        // 立体が育ったという知らせも聞く
+        growers.Clear();
+        growers.AddRange(FindObjectsByType<SolidGrower>());
+        foreach (var g in growers) g.Grown += OnGrown;
     }
 
     void OnDisable()
     {
         foreach (var w in listening) if (w != null) w.Tried -= OnTried;
         listening.Clear();
+        foreach (var g in growers) if (g != null) g.Grown -= OnGrown;
+        growers.Clear();
+    }
+
+    void OnGrown(int sides, int count)
+    {
+        int r = sides - MinSides, c = count - MinCount;
+        if (r < 0 || r >= Rows || c < 0 || c >= Cols || !HasCell(r, c)) return;
+        if (results[r, c] != (int)CornerFold.Result.Corner || grown[r, c]) { dirty = true; return; }   // 育て直しは何もしない
+        grown[r, c] = true;
+        popTime[r, c] = 0f;   // 初めて育ったときだけポンと出す
+        dirty = true;
+        if (++grownFound == cornerTotal && !allGrown)
+        {
+            allGrown = true;
+            grownTimer = 0f;
+        }
     }
 
     void OnDestroy()
@@ -139,12 +173,15 @@ public class DiscoveryBoard : MonoBehaviour
 
     void ResetResults()
     {
-        cornerTotal = 0; cornerFound = 0; complete = false; completeShown = false; completeTimer = -1f;
+        cornerTotal = 0; cornerFound = 0; grownFound = 0;
+        cornersDone = false; cornersShown = false; cornersTimer = -1f;
+        allGrown = false; completeShown = false; grownTimer = -1f;
         for (int r = 0; r < Rows; r++)
             for (int c = 0; c < Cols; c++)
             {
                 results[r, c] = -1;
                 popTime[r, c] = -1f;
+                grown[r, c] = false;
                 if (HasCell(r, c) && CornerFold.Classify(MinSides + r, MinCount + c) == CornerFold.Result.Corner) cornerTotal++;
             }
         dirty = true;
@@ -162,10 +199,10 @@ public class DiscoveryBoard : MonoBehaviour
         results[r, c] = (int)result;
         popTime[r, c] = 0f;
         dirty = true;
-        if (result == CornerFold.Result.Corner && ++cornerFound == cornerTotal && !complete)
+        if (result == CornerFold.Result.Corner && ++cornerFound == cornerTotal && !cornersDone)
         {
-            complete = true;
-            completeTimer = 0f;
+            cornersDone = true;
+            cornersTimer = 0f;
         }
     }
 
@@ -182,21 +219,37 @@ public class DiscoveryBoard : MonoBehaviour
                     animating = true;
                 }
         UpdatePicking();
-        if (completeShown) animating = true;   // そろったあとは ○ がゆっくり息をする（= 触れる）
+        if (cornersShown) animating = true;    // ○ がそろったあとは ○ がゆっくり息をする（= 触れる）
+        foreach (bool g in grown) if (g) { animating = true; break; }   // ミニチュアが回る
         if (dirty || animating) Rebuild();
         dirty = animating;   // 縮み終わった次のフレームでもう 1 回作り、ちょうど 1 倍で止める
 
-        if (completeTimer >= 0f)
+        // ○ がそろった（2 章のゴール）: チャイムだけ。ボードは光らせない（まだ「候補が 5 つ」。本当に閉じるかは 4 章で確かめる）
+        if (cornersTimer >= 0f)
         {
-            completeTimer += Time.deltaTime;
-            if (completeTimer >= CompleteDelay)
+            cornersTimer += Time.deltaTime;
+            if (cornersTimer >= CompleteDelay)
             {
-                completeTimer = -1f;
-                completeShown = true;   // ここから緑の枠がずっと残る（そろったことが後からも見える）
+                cornersTimer = -1f;
+                cornersShown = true;
+                dirty = true;
+                if (source != null) source.PlayOneShot(chime, volume);
+                CornersFound?.Invoke();
+            }
+        }
+
+        // 5 つ全部が本当に閉じた（4 章のゴール = だから 5 つだけ）: ボード全体が緑に光ってチャイム。そのあと緑の枠が残る
+        if (grownTimer >= 0f)
+        {
+            grownTimer += Time.deltaTime;
+            if (grownTimer >= GrownDelay)
+            {
+                grownTimer = -1f;
+                completeShown = true;
                 dirty = true;
                 if (boardGlow != null) boardGlow.Flash(completeColor);
                 if (source != null) source.PlayOneShot(chime, volume);
-                Completed?.Invoke();
+                AllGrown?.Invoke();
             }
         }
     }
@@ -330,8 +383,13 @@ public class DiscoveryBoard : MonoBehaviour
                 if (result == CornerFold.Result.Corner)
                 {
                     if (hovered) pop *= 1.15f;
-                    else if (completeShown) pop *= 1f + 0.07f * (0.5f - 0.5f * Mathf.Cos(2f * Mathf.PI * Time.time / BreathePeriod));
-                    AddRing(m, 0.36f * s * pop, 0.25f * s * pop, 40, SubCorner);
+                    if (grown[r, c])
+                        AddMini(o, MinSides + r, MinCount + c, 0.4f * s * pop, SubCorner);   // 育てた立体のミニチュア（回る）
+                    else
+                    {
+                        if (!hovered && cornersShown) pop *= 1f + 0.07f * (0.5f - 0.5f * Mathf.Cos(2f * Mathf.PI * Time.time / BreathePeriod));
+                        AddRing(m, 0.36f * s * pop, 0.25f * s * pop, 40, SubCorner);
+                    }
                 }
                 else
                 {
@@ -386,6 +444,33 @@ public class DiscoveryBoard : MonoBehaviour
             AddTri(a, b + 1, a + 1, Front, sub);
         }
     }
+
+    // マスの中心 o の手前に、外接球の半径 radius の正多面体（p 角形が q 枚ずつ）を浮かせる。Y 軸まわりに回り、少し手前に傾く。
+    // 閉じた凸の立体なので片面で足りる（裏は見えない）。面ごとの法線で陰が付いて立体に見える
+    void AddMini(Vector3 o, int p, int q, float radius, int sub)
+    {
+        PolyhedronGrowth shape;
+        if (!minis.TryGetValue(p * 10 + q, out shape))
+        {
+            shape = PolyhedronGrowth.Plan(p, q, 1f, 0f);
+            minis[p * 10 + q] = shape;
+        }
+        if (shape == null) return;
+        float scale = radius / shape.Verts[0].magnitude;
+        float spin = Application.isPlaying ? Time.time * MiniSpin : 0.5f;
+        var center = o + new Vector3(0f, 0f, MarkZ - radius);   // 板にめり込まないよう、半径ぶん手前へ
+        foreach (var face in shape.Faces)
+        {
+            int first = verts.Count;
+            foreach (int vi in face) AddVert(center + MiniTurn(shape.Verts[vi] * scale, spin), Vector3.zero);
+            Vector3 n = Vector3.Cross(verts[first + 1] - verts[first], verts[first + 2] - verts[first]).normalized;   // 面のデータは外から見て時計回り → 外向き
+            for (int j = first; j < verts.Count; j++) norms[j] = n;
+            for (int j = 1; j < face.Length - 1; j++) AddTri(first, first + j, first + j + 1, n, sub);
+        }
+    }
+
+    static Vector3 MiniTurn(Vector3 v, float spin) =>
+        PolyhedronGrowth.Rotate(PolyhedronGrowth.Rotate(v, Vector3.up, spin), Vector3.right, -MiniTilt);   // 回して、上を手前（−Z）へ傾ける
 
     int AddVert(Vector3 p, Vector3 n) { verts.Add(p); norms.Add(n); return verts.Count - 1; }
 
