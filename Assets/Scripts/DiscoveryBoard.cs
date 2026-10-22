@@ -50,6 +50,8 @@ public class DiscoveryBoard : MonoBehaviour
     public event Action AllGrown;
     // ○ のマスが選ばれたとき (p, q)。SolidGrower がこれを聞いて立体を育てる
     public event Action<int, int> CornerPicked;
+    // true の間は ○ を選べない（矢印も、レイを当てたときの明るさ・予告も出さない）。3 章の上演を見終わるまで。CornerTheater が切り替える
+    public bool PickLocked { get; set; }
 
     public const int MinSides = 3, MaxSides = 6, MinCount = 2, MaxCount = 7;
     const int Rows = MaxSides - MinSides + 1;   // 4
@@ -274,6 +276,13 @@ public class DiscoveryBoard : MonoBehaviour
         if (!Application.isPlaying || picker == null || pickArea == null) return;
 
         int r = -1, c = -1;
+        if (PickLocked)
+        {
+            // 選べない間: レイが当たっても何も起きない（明るくもならない）。押しっぱなしで開いたときに選ばれないよう、押した状態は覚えておく
+            if (hoverR != -1 || hoverC != -1) { hoverR = hoverC = -1; dirty = true; }
+            pickerWasSelected = picker.isSelected;
+            return;
+        }
         if (picker.isHovered)
             foreach (var it in picker.interactorsHovering)
                 if (CellUnder(it.transform, out r, out c)) break;
@@ -308,7 +317,7 @@ public class DiscoveryBoard : MonoBehaviour
     bool ArrowTarget(out int tr, out int tc)
     {
         tr = tc = -1;
-        if (!Application.isPlaying || !cornersShown || allGrown || hoverR >= 0 || AnyGrowing()) return false;
+        if (!Application.isPlaying || !cornersShown || allGrown || PickLocked || hoverR >= 0 || AnyGrowing()) return false;
         for (int r = 0; r < Rows; r++)
             for (int c = 0; c < Cols; c++)
                 if (results[r, c] == (int)CornerFold.Result.Corner && !grown[r, c]) { tr = r; tc = c; return true; }
