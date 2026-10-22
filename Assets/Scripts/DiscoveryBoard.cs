@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.XR.Interaction.Toolkit.Interactables;
 using UnityEngine.XR.Interaction.Toolkit.Interactors;
 
@@ -34,6 +35,11 @@ public class DiscoveryBoard : MonoBehaviour
     [SerializeField, Min(0.02f)] float cellSize = 0.12f;
     [Tooltip("マスどうしのすき間（マスの大きさに対する割合）")]
     [SerializeField, Range(0f, 0.4f)] float cellGap = 0.12f;
+
+    [Header("選ぶ")]
+    [Tooltip("○ を選ぶボタン（グリップに加えて）。既定は右手のトリガー。左手のトリガーは実行時に足す")]
+    [SerializeField] InputAction pickAction =
+        new InputAction("Pick", InputActionType.Button, "<XRController>{RightHand}/{TriggerButton}");
 
     [Header("反応")]
     [SerializeField] Color completeColor = new Color(0.2f, 0.9f, 0.3f);
@@ -125,6 +131,10 @@ public class DiscoveryBoard : MonoBehaviour
         growers.Clear();
         growers.AddRange(FindObjectsByType<SolidGrower>());
         foreach (var g in growers) g.Grown += OnGrown;
+
+        // トリガーで選ぶ: 左手のトリガーも足す（InputAction は Enable の前でないとバインドを足せない）
+        if (pickAction.bindings.Count < 2) pickAction.AddBinding("<XRController>{LeftHand}/{TriggerButton}");
+        pickAction.Enable();
     }
 
     void OnDisable()
@@ -133,6 +143,7 @@ public class DiscoveryBoard : MonoBehaviour
         listening.Clear();
         foreach (var g in growers) if (g != null) g.Grown -= OnGrown;
         growers.Clear();
+        pickAction.Disable();
     }
 
     void OnGrown(int sides, int count)
@@ -221,6 +232,8 @@ public class DiscoveryBoard : MonoBehaviour
         UpdatePicking();
         if (cornersShown) animating = true;    // ○ がそろったあとは ○ がゆっくり息をする（= 触れる）
         foreach (bool g in grown) if (g) { animating = true; break; }   // ミニチュアが回る
+        int ar, ac;
+        if (hoverR >= 0 || ArrowTarget(out ar, out ac)) animating = true;   // 予告のミニチュアが回る / 矢印が跳ねる
         if (dirty || animating) Rebuild();
         dirty = animating;   // 縮み終わった次のフレームでもう 1 回作り、ちょうど 1 倍で止める
 
@@ -270,14 +283,36 @@ public class DiscoveryBoard : MonoBehaviour
         if (selected && !pickerWasSelected)
         {
             int sr, sc;
-            if (CellUnder(picker.firstInteractorSelecting.transform, out sr, out sc))
-            {
-                popTime[sr, sc] = 0f;   // 選んだ ○ がポンと跳ねる
-                dirty = true;
-                CornerPicked?.Invoke(MinSides + sr, MinCount + sc);
-            }
+            if (CellUnder(picker.firstInteractorSelecting.transform, out sr, out sc)) Pick(sr, sc);
         }
         pickerWasSelected = selected;
+
+        // トリガーでも選べる（レイが ○ に当たっているとき）。グリップだけだと、トリガーを押す子には何も起きない
+        if (pickAction.WasPressedThisFrame() && hoverR >= 0) Pick(hoverR, hoverC);
+    }
+
+    void Pick(int r, int c)
+    {
+        popTime[r, c] = 0f;   // 選んだ ○ がポンと跳ねる
+        dirty = true;
+        CornerPicked?.Invoke(MinSides + r, MinCount + c);
+    }
+
+    bool AnyGrowing()
+    {
+        foreach (var g in growers) if (g != null && g.Growing) return true;
+        return false;
+    }
+
+    // 矢印が指す ○: まだ育てていない ○ のうち最初の 1 つ（一度に指すのは 1 つだけ）。指さないときは false
+    bool ArrowTarget(out int tr, out int tc)
+    {
+        tr = tc = -1;
+        if (!Application.isPlaying || !cornersShown || allGrown || hoverR >= 0 || AnyGrowing()) return false;
+        for (int r = 0; r < Rows; r++)
+            for (int c = 0; c < Cols; c++)
+                if (results[r, c] == (int)CornerFold.Result.Corner && !grown[r, c]) { tr = r; tc = c; return true; }
+        return false;
     }
 
     // 手（レイの出どころ）が指している ○ のマス。レイが板に当たればその点、当たらなければ（手が近いとき）手の位置を板に落とした点で見る
@@ -385,6 +420,8 @@ public class DiscoveryBoard : MonoBehaviour
                     if (hovered) pop *= 1.15f;
                     if (grown[r, c])
                         AddMini(o, MinSides + r, MinCount + c, 0.4f * s * pop, SubCorner);   // 育てた立体のミニチュア（回る）
+                    else if (hovered)
+                        AddMini(o, MinSides + r, MinCount + c, 0.4f * s * pop, SubCell);     // 予告: 選ぶとこれが出てくる（緑ではない色）
                     else
                     {
                         if (!hovered && cornersShown) pop *= 1f + 0.07f * (0.5f - 0.5f * Mathf.Cos(2f * Mathf.PI * Time.time / BreathePeriod));
@@ -399,7 +436,51 @@ public class DiscoveryBoard : MonoBehaviour
                     AddRect(m, 0.38f * s * pop, 0.065f * s * pop, -Mathf.PI / 4f, sub);
                 }
             }
+        // 「これを選んで」の矢印: ピンの矢印と同じ形で、まだ育てていない ○ の真上から下向きに指し、上下に跳ねる
+        int ar, ac;
+        if (ArrowTarget(out ar, out ac))
+        {
+            float t = Mathf.Repeat(Time.time, ArrowPeriod) / ArrowPeriod;
+            float bob = ArrowBob * s * (0.5f + 0.5f * Mathf.Cos(2f * Mathf.PI * t));   // 上で始まって、○ へ近づいて、戻る
+            var tip = CellCenter(ar + 1, ac + 1) + new Vector3(0f, half + 0.06f * s + bob, ArrowZ);
+            AddDownArrow(tip, s, SubIcon);
+        }
         Apply(boardMesh, Submeshes, -1);
+    }
+
+    const float ArrowPeriod = 1.0f;   // 跳ねる周期 [秒]
+    const float ArrowBob = 0.25f;     // 跳ねる幅（マスの大きさに対する割合）
+    const float ArrowZ = -0.03f;      // 板より手前に浮かせる（上のマスに重なっても前に見える）
+
+    // 下向きの立体の矢印（四角い軸 + 四角すいの頭。工房の矢印と同じ形）。tip = 先端
+    void AddDownArrow(Vector3 tip, float s, int sub)
+    {
+        float headLen = 0.3f * s, headHalf = 0.17f * s, shaftLen = 0.4f * s, shaftHalf = 0.06f * s;
+        Vector3[] sq = { new Vector3(-1, 0, -1), new Vector3(1, 0, -1), new Vector3(1, 0, 1), new Vector3(-1, 0, 1) };
+        Vector3 baseY = tip + Vector3.up * headLen, top = baseY + Vector3.up * shaftLen;
+        for (int i = 0; i < 4; i++)
+        {
+            // 頭の 4 つの斜面
+            Vector3 a = baseY + sq[i] * headHalf, b = baseY + sq[(i + 1) % 4] * headHalf;
+            Vector3 n = Vector3.Cross(b - a, tip - a).normalized;
+            if (Vector3.Dot(n, (a + b) * 0.5f - baseY) < 0f) n = -n;   // 外向きに揃える
+            int i0 = AddVert(a, n), i1 = AddVert(b, n), i2 = AddVert(tip, n);
+            AddTri(i0, i1, i2, n, sub);
+            // 軸の 4 つの側面
+            Vector3 c = baseY + sq[i] * shaftHalf, d = baseY + sq[(i + 1) % 4] * shaftHalf;
+            Vector3 m = Vector3.Cross(d - c, Vector3.up).normalized;
+            if (Vector3.Dot(m, (c + d) * 0.5f - baseY) < 0f) m = -m;
+            int j0 = AddVert(c, m), j1 = AddVert(d, m), j2 = AddVert(d + Vector3.up * shaftLen, m), j3 = AddVert(c + Vector3.up * shaftLen, m);
+            AddTri(j0, j1, j2, m, sub);
+            AddTri(j0, j2, j3, m, sub);
+        }
+        // 頭の底（上向き）と軸のふた（上向き）
+        int h0 = AddVert(baseY + sq[0] * headHalf, Vector3.up), h1 = AddVert(baseY + sq[1] * headHalf, Vector3.up),
+            h2 = AddVert(baseY + sq[2] * headHalf, Vector3.up), h3 = AddVert(baseY + sq[3] * headHalf, Vector3.up);
+        AddTri(h0, h1, h2, Vector3.up, sub); AddTri(h0, h2, h3, Vector3.up, sub);
+        int t0 = AddVert(top + sq[0] * shaftHalf, Vector3.up), t1 = AddVert(top + sq[1] * shaftHalf, Vector3.up),
+            t2 = AddVert(top + sq[2] * shaftHalf, Vector3.up), t3 = AddVert(top + sq[3] * shaftHalf, Vector3.up);
+        AddTri(t0, t1, t2, Vector3.up, sub); AddTri(t0, t2, t3, Vector3.up, sub);
     }
 
     static readonly Vector3 Front = new Vector3(0f, 0f, -1f);   // 表の向き（見る人の側）
